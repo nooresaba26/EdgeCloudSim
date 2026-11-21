@@ -1,3 +1,4 @@
+<!-- The first host is server 0, the second is server 1, and the third is server 2. MIPS means million instructions per second. -->
 <?xml version="1.0"?>
 <edge_devices>
   <datacenter arch="x86" os="Linux" vmm="Xen">
