@@ -11,14 +11,14 @@ final class RacoTask extends Task {
     final double deadline;
     final int ramMb;
 
-    ThesisServer server;
+    RacoServer server;
     double uploadSeconds;
     double uploadEnds;
     boolean uploaded;
     boolean correct = true;
     String refusal = "NO_FEASIBLE";
 
-    ThesisTask(TaskProperty p, int id, int brokerId, CpuUtilizationModel_Custom cpu) {
+    RacoTask(TaskProperty p, int id, int brokerId, CpuUtilizationModel_Custom cpu) {
         super(p.getMobileDeviceId(), id,
               Math.max(1L, p.getLength()), p.getPesNumber(),
               Math.max(1L, p.getInputFileSize()),
