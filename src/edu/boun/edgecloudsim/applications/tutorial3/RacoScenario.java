@@ -14,22 +14,22 @@ import edu.boun.edgecloudsim.task_generator.LoadGeneratorModel;
 import edu.boun.edgecloudsim.utils.Location;
 import edu.boun.edgecloudsim.utils.SimLogger;
 
-public final class ThesisScenario extends SampleScenarioFactory {
+public final class RacoScenario extends SampleScenarioFactory {
     private final int deviceCount;
     private final double seconds;
 
-    private ThesisScenario(int devices, double seconds) {
+    private RacoScenario(int devices, double seconds) {
         super(devices, seconds, "THESIS", "THESIS");
         this.deviceCount = devices;
         this.seconds = seconds;
     }
 
     @Override public EdgeOrchestrator getEdgeOrchestrator() {
-        return new ThesisOrchestrator();
+        return new RacoOrchestrator();
     }
 
     @Override public MobileDeviceManager getMobileDeviceManager() throws Exception {
-        return new ThesisBroker();
+        return new RacoBroker();
     }
 
     @Override public MobilityModel getMobilityModel() {
@@ -55,10 +55,10 @@ public final class ThesisScenario extends SampleScenarioFactory {
     }
 
     @Override public LoadGeneratorModel getLoadGeneratorModel() {
-        return new IdleActiveLoadGenerator(deviceCount, ThesisRules.LAST_ARRIVAL, "THESIS") {
+        return new IdleActiveLoadGenerator(deviceCount, RacoRules.LAST_ARRIVAL, "THESIS") {
             @Override public void initializeModel() {
                 super.initializeModel();
-                getTaskList().removeIf(t -> t.getStartTime() > ThesisRules.LAST_ARRIVAL);
+                getTaskList().removeIf(t -> t.getStartTime() > RacoRules.LAST_ARRIVAL);
             }
         };
     }
@@ -69,12 +69,12 @@ public final class ThesisScenario extends SampleScenarioFactory {
 
         if (!settings.initialize(cfg + "default_config.properties",
                 cfg + "edge_devices.xml", cfg + "applications.xml")) {
-            throw new IllegalArgumentException("Cannot initialize thesis configuration");
+            throw new IllegalArgumentException("Cannot initialize Raco configuration");
         }
 
         for (double[] app : settings.getTaskLookUpTable()) {
-            if (app[13] <= 0 || ThesisRules.LAST_ARRIVAL + app[13]
-                    + ThesisRules.FEEDBACK + 0.000001 >= settings.getSimulationTime()) {
+            if (app[13] <= 0 || RacoRules.LAST_ARRIVAL + app[13]
+                    + RacoRules.FEEDBACK + 0.000001 >= settings.getSimulationTime()) {
                 throw new IllegalArgumentException("Check app deadlines and simulation end time");
             }
         }
@@ -84,9 +84,9 @@ public final class ThesisScenario extends SampleScenarioFactory {
         CloudSim.init(2, Calendar.getInstance(), false, 0.01);
 
         int devices = settings.getMinNumOfMobileDev();
-        ThesisScenario factory = new ThesisScenario(devices, settings.getSimulationTime());
+        RacoScenario factory = new RacoScenario(devices, settings.getSimulationTime());
         SimManager manager = new SimManager(factory, devices, "THESIS", "THESIS");
         manager.startSimulation();
-        ((ThesisBroker) manager.getMobileDeviceManager()).printSummary();
+        ((RacoBroker) manager.getMobileDeviceManager()).printSummary();
     }
 }
