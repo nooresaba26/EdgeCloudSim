@@ -108,3 +108,8 @@ final class RacoOrchestrator extends SampleEdgeOrchestrator {
         return task.server.vm;
     }
 }
+
+// For example, if the two eligible servers have reputations 0.75 and 0.50, 
+// their selection probabilities are 0.60 and 0.40. If every physically feasible host is at its cap, 
+// the task gets CAP_FULL. For this first version, that ends the assignment attempt.
+//  It contributes no success or failure to any server.
