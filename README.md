@@ -1,3 +1,32 @@
+
+# RACO: Reputation-Aware Task Offloading with Admission Control
+
+This repository is a fork of EdgeCloudSim, extended for my undergraduate thesis on reputation-aware task offloading with admission control under delayed feedback.
+
+## Proposed Mechanism
+
+The implementation consists of:
+
+1. **Feasibility Filtering:** Select servers based on availability, memory, connectivity, and predicted deadline feasibility.
+2. **Reputation Calculation:** Calculate server reputation using a time-decayed Beta reputation model based on previous task outcomes.
+3. **Adaptive Admission Control:** Limit the number of unresolved tasks assigned to each server based on its reputation.
+4. **Reputation-Weighted Selection:** Probabilistically select eligible servers based on their reputation scores.
+5. **Delayed Feedback Handling:** Update reputation and release admission slots when task outcomes become known.
+
+## Implementation Status
+
+The core mechanism has been implemented and tested in EdgeCloudSim.
+
+Comparative evaluation against baseline offloading policies and further experimental validation are ongoing.
+
+## Original EdgeCloudSim
+
+The underlying EdgeCloudSim framework was developed by its original contributors:
+https://github.com/CagataySonmez/EdgeCloudSim
+
+---
+
+
 # EdgeCloudSim
 
 [![GitHub stars](https://img.shields.io/github/stars/CagataySonmez/EdgeCloudSim?style=for-the-badge)](https://github.com/CagataySonmez/EdgeCloudSim/stargazers)
