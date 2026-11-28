@@ -1,0 +1,291 @@
+--- a/src/edu/boun/edgecloudsim/applications/tutorial3/RacoBroker.java
++++ b/src/edu/boun/edgecloudsim/applications/tutorial3/RacoBroker.java
+@@ -25,6 +25,7 @@
+ 
+     private record Verdict(RacoTask task, boolean ok, String cause, double occurred) {}
+ 
++    private final java.util.List<RacoTask> trace = new java.util.ArrayList<>();
+     private int offered, assigned, accepted, failed, capFull, noFeasible;
+ 
+     RacoBroker() throws Exception { super(); }
+@@ -43,6 +44,7 @@
+         double now = CloudSim.clock();
+         var sim = SimManager.getInstance();
+         RacoTask task = new RacoTask(input, ++offered, getId(), getCpuUtilizationModel());
++        if (RacoRules.TRACE != null) trace.add(task);
+         task.setSubmittedLocation(sim.getMobilityModel()
+                 .getLocation(task.getMobileDeviceId(), now));
+ 
+@@ -51,14 +53,16 @@
+         Vm vm = orchestrator.getVmToOffload(task, tier);
+ 
+         if (vm == null) {
++            task.terminal = task.refusal;
+             if (task.refusal.equals("CAP_FULL")) capFull++;
+             else noFeasible++;
+-            System.out.printf(Locale.ROOT, "%.4f task=%d %s%n",
++            if (RacoRules.TRACE == null) System.out.printf(Locale.ROOT, "%.4f task=%d %s%n",
+                     now, task.getCloudletId(), task.refusal);
+             return;
+         }
+ 
+         assigned++;
++        task.assignedAt = now;
+         task.setAssociatedDatacenterId(tier);
+         task.setAssociatedHostId(task.server.id);
+         task.setAssociatedVmId(vm.getId());
+@@ -85,6 +89,7 @@
+         RacoTask task = (RacoTask) event.getData();
+         double now = CloudSim.clock();
+ 
++        task.cpuEnd = now;
+         task.server.cpuFinished(task);
+         log(task, "CPU_DONE", now);
+         startCpu(task.server);
+@@ -100,11 +105,12 @@
+             long key = SimUtils.getSeed() ^ ((long) task.getCloudletId() << 32)
+                     ^ task.server.id;
+             double draw = new SplittableRandom(key).nextDouble();
+-            if (draw < 0.15) {
++            if (draw < RacoRules.FAULT.withheld) {
++                task.withheld = true;
+                 log(task, "RESULT_WITHHELD", now);
+                 return;
+             }
+-            task.correct = draw >= 0.70;
++            task.correct = draw >= RacoRules.FAULT.badTotal;
+         }
+ 
+         NetworkModel net = SimManager.getInstance().getNetworkModel();
+@@ -141,6 +147,7 @@
+             }
+             case VERIFIED -> {
+                 RacoTask t = (RacoTask) event.getData();
++                t.verified = now;
+                 String cause = t.correct ? "OK" : "INVALID";
+                 log(t, "VERIFIED_" + cause, now);
+                 reportLater(t, t.correct, cause);
+@@ -163,6 +170,9 @@
+ 
+     private void resolve(RacoTask task, boolean ok, String cause, double occurred) {
+         if (!task.server.observe(task, ok, occurred, CloudSim.clock())) return;
++        task.terminal = cause;
++        task.terminalAt = occurred;
++        task.observed = CloudSim.clock();
+         if (ok) accepted++;
+         else failed++;
+         log(task, "RESOLVED_" + cause, occurred);
+@@ -171,13 +181,20 @@
+     private void log(RacoTask task, String event, double occurred) {
+         double now = CloudSim.clock();
+         double r = task.server.reputation(now);
++        if (RacoRules.TRACE != null) return;
+         System.out.printf(Locale.ROOT,
+                 "%.4f task=%d host=%d %s occurred=%.4f deadline=%.4f U=%d R=%.4f B=%d%n",
+                 now, task.getCloudletId(), task.server.id, event, occurred,
+                 task.deadline, task.server.unresolved(), r, task.server.cap(r));
+     }
+ 
+-    void printSummary() {
++    void printSummary() throws java.io.IOException {
++        if (RacoRules.TRACE != null) {
++            RacoTrace.write(java.nio.file.Path.of(RacoRules.TRACE), trace);
++            if (offered != assigned + capFull + noFeasible || assigned != accepted + failed) {
++                throw new IllegalStateException("Inconsistent task accounting");
++            }
++        }
+         System.out.printf("Offered=%d Assigned=%d Accepted=%d Failed=%d "
+                         + "NoFeasible=%d CapFull=%d Pending=%d%n",
+                 offered, assigned, accepted, failed, noFeasible, capFull,
+--- a/src/edu/boun/edgecloudsim/applications/tutorial3/RacoOrchestrator.java
++++ b/src/edu/boun/edgecloudsim/applications/tutorial3/RacoOrchestrator.java
+@@ -14,7 +14,7 @@
+ import edu.boun.edgecloudsim.utils.SimUtils;
+ 
+ final class RacoOrchestrator extends SampleEdgeOrchestrator {
+-    private record Candidate(RacoServer server, double reputation) {}
++    private record Candidate(RacoServer server, double reputation, double predicted, double weight) {}
+ 
+     private final List<RacoServer> servers = new ArrayList<>();
+     private final Random lottery = new Random(SimUtils.getSeed() ^ 713L);
+@@ -78,13 +78,19 @@
+                     + down + RacoRules.VERIFY;
+             if (predicted > task.deadline - now) continue;
+             physicallyFeasible++;
++            if (server.id == 1) task.h1Feasible = true;
+ 
+             // 3. Admission condition U_i + 1 <= B_i.
+             double r = server.reputation(now);
+             if (server.unresolved() + 1 > server.cap(r)) continue;
+ 
+-            eligible.add(new Candidate(server, r));
+-            totalWeight += r;
++            if (server.id == 1) task.h1Admissible = true;
++            double weight = switch (RacoRules.POLICY) {
++                case RANDOM, ADMISSION_ONLY -> 1.0;
++                default -> r;
++            };
++            eligible.add(new Candidate(server, r, predicted, weight));
++            totalWeight += weight;
+         }
+ 
+         if (eligible.isEmpty()) {
+@@ -93,15 +99,27 @@
+         }
+ 
+         // 4. Draw one server with probability R_i / sum(R).
+-        double ticket = lottery.nextDouble() * totalWeight;
+-        Candidate winner = eligible.get(eligible.size() - 1);
+-        for (Candidate c : eligible) {
+-            ticket -= c.reputation();
+-            if (ticket < 0) {
+-                winner = c;
+-                break;
++        Candidate winner;
++        if (RacoRules.POLICY == RacoRules.Policy.SHORTEST) {
++            winner = eligible.get(0);
++            for (Candidate c : eligible) {
++                if (c.predicted() < winner.predicted()) winner = c;
++            }
++        } else {
++            double ticket = lottery.nextDouble() * totalWeight;
++            winner = eligible.get(eligible.size() - 1);
++            for (Candidate c : eligible) {
++                ticket -= c.weight();
++                if (ticket < 0) {
++                    winner = c;
++                    break;
++                }
+             }
+         }
++        task.predicted = winner.predicted();
++        task.reputationBefore = winner.reputation();
++        task.unresolvedBefore = winner.server().unresolved();
++        task.capBefore = winner.server().cap(winner.reputation());
+ 
+         task.server = winner.server();
+         task.uploadSeconds = up;
+--- a/src/edu/boun/edgecloudsim/applications/tutorial3/RacoRules.java
++++ b/src/edu/boun/edgecloudsim/applications/tutorial3/RacoRules.java
+@@ -4,11 +4,24 @@
+ 
+ final class RacoRules {
+     static final int B_MIN = 1;
+-    static final int B_MAX = 5;
++    static final int B_MAX = Integer.parseInt(System.getProperty("raco.bMax", "5"));
++    static final int STATIC_CAP = Integer.parseInt(System.getProperty("raco.staticCap", "3"));
++    enum Policy { RANDOM, SHORTEST, REP_ONLY, ADMISSION_ONLY, STATIC, FULL }
++    enum Fault {
++        NORMAL(0, 0), MILD(0.05, 0.30), SEVERE(0.15, 0.70);
++        final double withheld, badTotal;
++        Fault(double withheld, double badTotal) {
++            this.withheld = withheld;
++            this.badTotal = badTotal;
++        }
++    }
++    static final Policy POLICY = Policy.valueOf(System.getProperty("raco.policy", "FULL"));
++    static final Fault FAULT = Fault.valueOf(System.getProperty("raco.fault", "SEVERE"));
++    static final String TRACE = System.getProperty("raco.tasks");
+ 
+-    static final double KAPPA = 0.025;    // decay rate per simulated second
++    static final double KAPPA = Double.parseDouble(System.getProperty("raco.kappa", "0.025"));    // decay rate per simulated second
+     static final double VERIFY = 0.15;    // seconds spent checking a result
+-    static final double FEEDBACK = 3.0;   // seconds for verdict to reach scheduler
++    static final double FEEDBACK = Double.parseDouble(System.getProperty("raco.feedback", "3"));   // seconds for verdict to reach scheduler
+     static final double LAST_ARRIVAL = 140.0;
+ 
+     // Application order matches applications.xml: AR, health, infotainment.
+--- a/src/edu/boun/edgecloudsim/applications/tutorial3/RacoScenario.java
++++ b/src/edu/boun/edgecloudsim/applications/tutorial3/RacoScenario.java
+@@ -83,7 +83,13 @@
+         SimLogger.getInstance().simStarted("sim_results", "THESIS");
+         CloudSim.init(2, Calendar.getInstance(), false, 0.01);
+ 
+-        int devices = settings.getMinNumOfMobileDev();
++        int devices = Integer.parseInt(System.getProperty("raco.devices",
++                String.valueOf(settings.getMinNumOfMobileDev())));
++        if (devices < 1 || !Double.isFinite(RacoRules.KAPPA) || RacoRules.KAPPA < 0
++                || !Double.isFinite(RacoRules.FEEDBACK) || RacoRules.FEEDBACK < 0
++                || RacoRules.STATIC_CAP < 1 || RacoRules.B_MAX < RacoRules.B_MIN) {
++            throw new IllegalArgumentException("Invalid evaluation parameter");
++        }
+         RacoScenario factory = new RacoScenario(devices, settings.getSimulationTime());
+         SimManager manager = new SimManager(factory, devices, "THESIS", "THESIS");
+         manager.startSimulation();
+--- a/src/edu/boun/edgecloudsim/applications/tutorial3/RacoServer.java
++++ b/src/edu/boun/edgecloudsim/applications/tutorial3/RacoServer.java
+@@ -55,6 +55,11 @@
+     }
+ 
+     int cap(double reputation) {
++        switch (RacoRules.POLICY) {
++            case RANDOM, SHORTEST, REP_ONLY: return Integer.MAX_VALUE;
++            case STATIC: return RacoRules.STATIC_CAP;
++            default: break;
++        }
+         return RacoRules.B_MIN + (int) Math.floor(
+                 (RacoRules.B_MAX - RacoRules.B_MIN) * reputation);
+     }
+--- a/src/edu/boun/edgecloudsim/applications/tutorial3/RacoTask.java
++++ b/src/edu/boun/edgecloudsim/applications/tutorial3/RacoTask.java
+@@ -9,6 +9,12 @@
+ 
+ final class RacoTask extends Task {
+     final double deadline;
++    final TaskProperty input;
++    double assignedAt = Double.NaN, predicted = Double.NaN, reputationBefore = Double.NaN;
++    double cpuEnd = Double.NaN, verified = Double.NaN, terminalAt = Double.NaN, observed = Double.NaN;
++    int unresolvedBefore = -1, capBefore = -1;
++    boolean h1Feasible, h1Admissible, withheld;
++    String terminal;
+     final int ramMb;
+ 
+     RacoServer server;
+@@ -25,6 +31,7 @@
+               Math.max(1L, p.getOutputFileSize()),
+               cpu, new UtilizationModelFull(), new UtilizationModelFull());
+ 
++        input = p;
+         int app = p.getTaskType();
+         setTaskType(app);
+         setUserId(brokerId);
+--- /dev/null
++++ b/src/edu/boun/edgecloudsim/applications/tutorial3/RacoTrace.java
+@@ -0,0 +1,37 @@
++package edu.boun.edgecloudsim.applications.tutorial3;
++
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.io.IOException;
++import java.util.List;
++
++/** One record for every offered task. Empty fields describe unobserved events. */
++final class RacoTrace {
++    private RacoTrace() {}
++    static void write(Path path, List<RacoTask> tasks) throws IOException {
++        try (var out = Files.newBufferedWriter(path)) {
++            out.write("task,device,app,arrival_s,input_kb,output_kb,work_mi,cores,ram_mb,deadline_s,"
++                    + "host,assigned_s,predicted_s,r_before,u_before,cap_before,h1_feasible,h1_admissible,"
++                    + "cpu_done_s,withheld,verified_s,verified_correct,terminal,terminal_s,observed_s");
++            out.newLine();
++            for (var t : tasks) {
++                var p = t.input;
++                if (t.terminal == null) throw new IllegalStateException("Unresolved task");
++                String cap = t.capBefore < 0 || t.capBefore == Integer.MAX_VALUE ? "" : Integer.toString(t.capBefore);
++                out.write(String.join(",",
++                        Integer.toString(t.getCloudletId()), Integer.toString(p.getMobileDeviceId()),
++                        Integer.toString(p.getTaskType()), number(p.getStartTime()), Long.toString(p.getInputFileSize()),
++                        Long.toString(p.getOutputFileSize()), Long.toString(p.getLength()), Integer.toString(p.getPesNumber()),
++                        Integer.toString(t.ramMb), number(t.deadline), t.server == null ? "" : Integer.toString(t.server.id),
++                        number(t.assignedAt), number(t.predicted), number(t.reputationBefore),
++                        t.unresolvedBefore < 0 ? "" : Integer.toString(t.unresolvedBefore), cap,
++                        t.h1Feasible ? "1" : "0", t.h1Admissible ? "1" : "0", number(t.cpuEnd),
++                        t.withheld ? "1" : "0", number(t.verified),
++                        Double.isNaN(t.verified) ? "" : (t.correct ? "1" : "0"),
++                        t.terminal, number(t.terminalAt), number(t.observed)));
++                out.newLine();
++            }
++        }
++    }
++    private static String number(double value) { return Double.isNaN(value) ? "" : Double.toString(value); }
++}
